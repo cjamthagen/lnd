@@ -902,6 +902,33 @@ func (c *ChannelGraph) HasLightningNode(pub *btcec.PublicKey) (time.Time, bool, 
 	return updateTime, exists, nil
 }
 
+// HasChannel checks if there are any channel edges associated with this node.
+// If there is one, it returns true, otherwise false.
+func (l *LightningNode) HasChannel() (bool, error) {
+	var hasChannel bool
+
+	err := l.db.View(func(tx *bolt.Tx) error {
+		nodePub := l.PubKey.SerializeCompressed()
+		edges := tx.Bucket(edgeBucket)
+		if edges == nil {
+			return ErrGraphNotFound
+		}
+
+		// Starting from the key pubKey || 0, we seek forward in the
+		// bucket until we find a key for this public key. If none is found
+		// it means this channel doesn't have any outbound edges and false
+		// will be returned.
+		edgeCursor := edges.Cursor()
+		nodeEdge, _ := edgeCursor.Seek(nodePub[:])
+		if bytes.HasPrefix(nodeEdge, nodePub) {
+			hasChannel = true
+		}
+		return nil
+	})
+
+	return hasChannel, err
+}
+
 // ForEachChannel iterates through all the outgoing channel edges from this
 // node, executing the passed callback with each edge as its sole argument. If
 // the callback returns an error, then the iteration is halted with the error

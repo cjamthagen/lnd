@@ -20,6 +20,12 @@ import (
 	"github.com/lightningnetwork/lightning-onion"
 )
 
+// MaxUnconnectedNodes is the maximum amount of nodes without open channels
+// that we will accept connections from. When this number of connections are
+// reached, we will only accept connections from nodes that have channels open
+// on the blockchain already.
+const MaxUnconnectedNodes = 10
+
 // FeeSchema is the set fee configuration for a Lighting Node on the network.
 // Using the coefficients described within he schema, the required fee to
 // forward outgoing payments can be derived.
@@ -544,7 +550,7 @@ func (r *ChannelRouter) processNetworkAnnouncement(msg lnwire.Message) bool {
 	// A new node announcement has arrived which either presents a new
 	// node, or a node updating previously advertised information.
 	case *lnwire.NodeAnnouncement:
-		// Before proceeding ensure that we aren't already away of this
+		// Before proceeding ensure that we aren't already aware of this
 		// node, and if we are then this is a newer update that we
 		// known of.
 		lastUpdate, exists, err := r.cfg.Graph.HasLightningNode(msg.NodeID)
@@ -554,7 +560,7 @@ func (r *ChannelRouter) processNetworkAnnouncement(msg lnwire.Message) bool {
 			return false
 		}
 
-		// If we've reached this pint then we're aware of th vertex
+		// If we've reached this point then we're aware of the vertex
 		// being advertised. So we now check if the new message has a
 		// new time stamp, if not then we won't accept the new data as
 		// it would override newer data.
@@ -572,6 +578,36 @@ func (r *ChannelRouter) processNetworkAnnouncement(msg lnwire.Message) bool {
 			Address:    msg.Address,
 			PubKey:     msg.NodeID,
 			Alias:      msg.Alias.String(),
+		}
+
+		// If the number of channels associated with this node is non-zero,
+		// it can be added to the graph immediately. Otherwise we have to assert
+		// that there aren't too many nodes with zero channels in the graph already.
+		var count uint16
+		hasChannel, err := node.HasChannel()
+		if err != nil {
+			log.Errorf("unable to query node: %v", err)
+			return false
+		}
+		if !hasChannel {
+			err = r.cfg.Graph.ForEachNode(func(n *channeldb.LightningNode) error {
+				ok, err2 := n.HasChannel()
+				if err2 != nil && !ok {
+					count += 1
+				}
+				// TODO: Can we break out if we reach MaxUnconnectedNodes?
+				return err2
+			})
+			if err != nil {
+				log.Errorf("unable to iterate nodes in graph: ", err)
+				return false
+			}
+
+			if count >= MaxUnconnectedNodes {
+				log.Infof("max number of incoming connections from unconnected nodes"+
+					"reached, dropping %v", msg.NodeID)
+				return false
+			}
 		}
 
 		if err = r.cfg.Graph.AddLightningNode(node); err != nil {
